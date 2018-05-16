@@ -1,0 +1,6 @@
+functions/*/*.zip
+functions/*/*.so
+make_config/config-local.make
+dist/*
+main
+.DS_Store

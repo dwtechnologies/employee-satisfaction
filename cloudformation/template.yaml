@@ -1,0 +1,223 @@
+Description: "Employee Satisfaction Serverless"
+Transform: "AWS::Serverless-2016-10-31"
+
+
+Mappings:
+  dev:
+    Kms:
+      Arn: "arn:to:kms"
+    Sns:
+      Email: "email"
+    Redshift:
+      Host: "cluster.redshift"
+      Port: "5439"
+      Db: "db"
+      Table: "hr_employee_satisfaction"
+      Username: "user"
+      Password: "EncryptedPassword"
+    Vpc:
+      Id: "vpcId"
+      SubnetA: "subnetA"
+      SubnetB: "subnetB"
+      SubnetC: "subnetC"
+
+  ### Add other targerts here...
+
+
+Parameters:
+
+  ApplicationName:
+    Description: "Name of the application"
+    Type: "String"
+
+  Env:
+    Description: "Environment"
+    Type: "String"
+
+
+Resources:
+
+  ### ROLES ###
+  PublishRole:
+    Type: "AWS::IAM::Role"
+    DependsOn:
+      - "SqsQueue"
+      - "SnsTopic"
+    Properties:
+      RoleName: !Sub "${ApplicationName}-publishRole-${Env}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "iot.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+      Path: "/"
+      Policies: 
+        - PolicyName: !Sub "${ApplicationName}-publishPolicy-${Env}"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "arn:aws:logs:*:*:*"
+
+              - Effect: "Allow"
+                Action:
+                  - "sqs:SendMessage"
+                Resource: !GetAtt "SqsQueue.Arn"
+
+              - Effect: "Allow"
+                Action:
+                  - "sns:Publish"
+                Resource: !Ref "SnsTopic"
+
+              - Effect: "Allow"
+                Action:
+                  - "kms:Decrypt"
+                Resource: !FindInMap [ !Ref "Env", "Kms", "Arn" ]
+
+  ConsumerRole:
+    Type: "AWS::IAM::Role"
+    DependsOn:
+      - "SqsQueue"
+    Properties:
+      RoleName: !Sub "${ApplicationName}-consumeRole-${Env}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+      Path: "/"
+      Policies: 
+        - PolicyName: !Sub "${ApplicationName}-consumePolicy-${Env}"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource: "arn:aws:logs:*:*:*"
+
+              - Effect: "Allow"
+                Action:
+                  - "ec2:CreateNetworkInterface"
+                  - "ec2:DescribeNetworkInterfaces"
+                  - "ec2:DeleteNetworkInterface"
+                Resource: "*"
+
+              - Effect: "Allow"
+                Action:
+                  - "sqs:ReceiveMessage"
+                  - "sqs:ChangeMessageVisibility"
+                  - "sqs:DeleteMessage"
+                  - "sqs:DeleteMessageBatch"
+                Resource: !GetAtt "SqsQueue.Arn"
+
+              - Effect: "Allow"
+                Action:
+                  - "kms:Decrypt"
+                Resource: !FindInMap [ !Ref "Env", "Kms", "Arn" ]
+
+
+### SQS QUEUE ###
+  SqsQueue:
+    Type: "AWS::SQS::Queue"
+    Properties:
+      QueueName: !Sub "${ApplicationName}-sqs-${Env}"
+
+
+### SNS TOPIC AND SUBSCRIBER ###
+  SnsTopic:
+    Type: "AWS::SNS::Topic"
+    Properties: 
+      Subscription:
+        - Protocol: "email"
+          Endpoint: !FindInMap [ !Ref "Env", "Sns", "Email" ]
+      TopicName: !Sub "${ApplicationName}-sns-${Env}"
+
+
+### SECURITY GROUPS ###
+  SecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: !Sub "${ApplicationName}-sg-${Env}"
+      VpcId: !FindInMap [ !Ref "Env", "Vpc", "Id" ]
+
+
+### LAMBDA FUNCTIONS ###
+  PublishEvent:
+    Type: "AWS::Serverless::Function"
+    DependsOn:
+      - "PublishRole"
+    Properties:
+      Description: !Sub "${ApplicationName} Publish Event to SQS Queue"
+      CodeUri: "../functions/publishEvent/main.zip"
+      FunctionName: !Sub "${ApplicationName}-pushEvent-${Env}"
+      Handler: "main"
+      Environment:
+        Variables:
+          SQS_URL: !Ref "SqsQueue"
+          SNS_TOPIC: !Ref "SnsTopic"
+      
+      Role: !GetAtt "PublishRole.Arn"
+      Runtime: "go1.x"
+      MemorySize: 128
+      Timeout: 120
+
+  ConsumeEvents:
+    Type: "AWS::Serverless::Function"
+    DependsOn:
+      - "ConsumerRole"
+      - "SecurityGroup"
+    Properties:
+      Description: !Sub "${ApplicationName} Consume Events from SQS Queue"
+      CodeUri: "../functions/consumeEvents/main.zip"
+      FunctionName: !Sub "${ApplicationName}-consumeEvents-${Env}"
+      Handler: "main"
+      Environment:
+        Variables:
+          SQS_URL: !Ref "SqsQueue"
+          REDSHIFT_HOST: !FindInMap [ !Ref "Env", "Redshift", "Host" ]
+          REDSHIFT_PORT: !FindInMap [ !Ref "Env", "Redshift", "Port" ]
+          REDSHIFT_DB: !FindInMap [ !Ref "Env", "Redshift", "Db" ]
+          REDSHIFT_TABLE_NAME: !FindInMap [ !Ref "Env", "Redshift", "Table" ]
+          REDSHIFT_USERNAME: !FindInMap [ !Ref "Env", "Redshift", "Username" ]
+          REDSHIFT_PASSWORD: !FindInMap [ !Ref "Env", "Redshift", "Password" ]
+      
+      Role: !GetAtt "ConsumerRole.Arn"
+      Runtime: "go1.x"
+      MemorySize: 128
+      Timeout: 300
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref "SecurityGroup"
+        SubnetIds:
+          - !FindInMap [ !Ref "Env", "Vpc", "SubnetA" ]
+          - !FindInMap [ !Ref "Env", "Vpc", "SubnetB" ]
+          - !FindInMap [ !Ref "Env", "Vpc", "SubnetC" ]
+      Events:
+        Timer:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)

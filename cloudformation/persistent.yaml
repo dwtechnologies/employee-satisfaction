@@ -1,0 +1,77 @@
+Description: "Employee Satisfaction Persistent"
+
+
+Parameters:
+
+  ApplicationName:
+    Description: "Name of the application"
+    Type: "String"
+
+  Env:
+    Description: "Environment"
+    Type: "String"
+
+
+Resources:
+
+### KMS ###
+  KmsKey:
+    Type: "AWS::KMS::Key"
+    Properties:
+      Description: !Sub "${ApplicationName} - KMS Key"
+      KeyPolicy:
+        Version: "2012-10-17"
+        Id: !Sub "${ApplicationName}-key-${Env}"
+        Statement:
+          - Sid: "Allow administration of the key"
+            Effect: "Allow"
+            Principal:
+              AWS:
+                - !Sub "arn:aws:sts::${AWS::AccountId}:root"
+            Action:
+              - "kms:*"
+            Resource: "*"
+
+  KmsKeyAlias:
+    Type: "AWS::KMS::Alias"
+    DependsOn:
+      - "KmsKey"
+    Properties:
+      AliasName: !Sub "alias/${ApplicationName}-key-${Env}"
+      TargetKeyId: !Ref "KmsKey"
+
+
+### IAM ###
+  KmsIamUser:
+    Type: "AWS::IAM::User"
+    Properties:
+      UserName: !Sub "${ApplicationName}-kmsUser-${Env}"
+      Policies:
+        - PolicyName: !Sub "${ApplicationName}-kmsUserPolicy-${Env}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: 
+                  - "kms:Encrypt"
+                Resource: !GetAtt "KmsKey.Arn"
+
+  KmsIamAccessKey:
+    Type: "AWS::IAM::AccessKey"
+    Properties:
+      UserName: !Ref "KmsIamUser"
+
+
+Outputs:
+
+  KmsArn:
+    Description: "Arn to the KMS key"
+    Value: !GetAtt "KmsKey.Arn"
+
+  KmsIamAccessKey:
+    Description: "KMS IAM user access key ID"
+    Value: !Ref "KmsIamAccessKey"
+
+  KmsIamAccessKeySecret:
+    Description: "KMS IAM user access secret key ID"
+    Value: !GetAtt "KmsIamAccessKey.SecretAccessKey"
